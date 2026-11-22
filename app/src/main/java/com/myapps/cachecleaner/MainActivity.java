@@ -14,6 +14,7 @@ import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.LinearLayout;
@@ -30,6 +31,7 @@ public class MainActivity extends Activity {
     private TextView statusBadge;
     private TextView summaryText;
     private CheckBox includeSystemCheck;
+    private Button testButton;
     private Button startButton;
     private Button stopButton;
 
@@ -62,31 +64,34 @@ public class MainActivity extends Activity {
         subtitle.setText("Automatically clears app caches without touching your personal data or logins.");
         subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         subtitle.setTextColor(Color.parseColor("#4B5563"));
-        subtitle.setPadding(0, dp(6), 0, dp(20));
+        subtitle.setPadding(0, dp(6), 0, dp(18));
         root.addView(subtitle);
 
         statusBadge = new TextView(this);
         statusBadge.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         statusBadge.setPadding(dp(14), dp(12), dp(14), dp(12));
-        root.addView(statusBadge, marginParams(0, 0, 0, dp(16)));
+        root.addView(statusBadge, marginParams(0, 0, 0, dp(14)));
 
         Button accessibilityBtn = makeButton("1. Open Accessibility Settings", "#374151");
-        accessibilityBtn.setOnClickListener(v -> {
-            Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
-            startActivity(intent);
-        });
-        root.addView(accessibilityBtn, marginParams(0, 0, 0, dp(16)));
+        accessibilityBtn.setOnClickListener(v ->
+                startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        root.addView(accessibilityBtn, marginParams(0, 0, 0, dp(14)));
 
         includeSystemCheck = new CheckBox(this);
-        includeSystemCheck.setText("Also scan core system apps (takes longer)");
+        includeSystemCheck.setText("Also scan hidden background/system apps (slower)");
         includeSystemCheck.setTextColor(Color.parseColor("#1F2937"));
         includeSystemCheck.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         includeSystemCheck.setChecked(false);
-        root.addView(includeSystemCheck, marginParams(0, 0, 0, dp(16)));
+        includeSystemCheck.setOnCheckedChangeListener((btn, checked) -> refreshUI());
+        root.addView(includeSystemCheck, marginParams(0, 0, 0, dp(14)));
 
-        startButton = makeButton("2. Start Cleaning All Caches", "#2563EB");
-        startButton.setOnClickListener(v -> handleStartCleaning());
-        root.addView(startButton, marginParams(0, 0, 0, dp(12)));
+        testButton = makeButton("Test First 3 Apps (5-Second Check)", "#0D9488");
+        testButton.setOnClickListener(v -> handleStartCleaning(3));
+        root.addView(testButton, marginParams(0, 0, 0, dp(10)));
+
+        startButton = makeButton("2. Clean All Everyday Apps", "#2563EB");
+        startButton.setOnClickListener(v -> handleStartCleaning(0));
+        root.addView(startButton, marginParams(0, 0, 0, dp(10)));
 
         stopButton = makeButton("Stop Cleaning", "#DC2626");
         stopButton.setOnClickListener(v -> {
@@ -94,23 +99,30 @@ public class MainActivity extends Activity {
             refreshUI();
             Toast.makeText(this, "Cleaning stopped.", Toast.LENGTH_SHORT).show();
         });
-        root.addView(stopButton, marginParams(0, 0, 0, dp(20)));
+        root.addView(stopButton, marginParams(0, 0, 0, dp(18)));
 
         summaryText = new TextView(this);
-        summaryText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        summaryText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         summaryText.setTextColor(Color.parseColor("#374151"));
         summaryText.setPadding(dp(14), dp(14), dp(14), dp(14));
         summaryText.setBackground(roundedBox("#FFFFFF", dp(12)));
-        root.addView(summaryText, marginParams(0, 0, 0, dp(16)));
+        root.addView(summaryText, marginParams(0, 0, 0, dp(14)));
 
         TextView tipText = new TextView(this);
-        tipText.setText("Tip: Keep your screen unlocked while cleaning runs. Leave the phone alone until it returns here automatically.");
+        tipText.setText("Tip: Run 'Test First 3 Apps' first to verify speed. Keep your screen unlocked until it returns here.");
         tipText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         tipText.setTextColor(Color.parseColor("#6B7280"));
         root.addView(tipText);
 
         scrollView.addView(root);
         setContentView(scrollView);
+
+        WindowInsetsController controller = getWindow().getInsetsController();
+        if (controller != null) {
+            controller.setSystemBarsAppearance(
+                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
+                    WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS);
+        }
     }
 
     @Override
@@ -119,7 +131,7 @@ public class MainActivity extends Activity {
         refreshUI();
     }
 
-    private void handleStartCleaning() {
+    private void handleStartCleaning(int limit) {
         if (!isAccessibilityEnabled() || !CacheCleanerService.isServiceConnected()) {
             Toast.makeText(this, "Turn ON 'My Cache Cleaner' in Accessibility Settings first.", Toast.LENGTH_LONG).show();
             startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
@@ -130,6 +142,10 @@ public class MainActivity extends Activity {
         if (packages.isEmpty()) {
             Toast.makeText(this, "No apps found to clean.", Toast.LENGTH_SHORT).show();
             return;
+        }
+
+        if (limit > 0 && packages.size() > limit) {
+            packages = new ArrayList<>(packages.subList(0, limit));
         }
 
         boolean started = CacheCleanerService.startCleaning(packages);
@@ -153,11 +169,21 @@ public class MainActivity extends Activity {
             statusBadge.setBackground(roundedBox("#FEE2E2", dp(10)));
         }
 
+        int count = getTargetPackages(includeSystemCheck.isChecked()).size();
+        startButton.setText("2. Clean All (" + count + " Apps)");
+
         boolean running = CacheCleanerService.isRunning();
+        testButton.setEnabled(!running);
         startButton.setEnabled(!running);
         stopButton.setEnabled(running);
         stopButton.setAlpha(running ? 1.0f : 0.45f);
-        summaryText.setText("Status: " + CacheCleanerService.getLastSummary());
+
+        String debug = CacheCleanerService.getLastDebug();
+        String status = "Status: " + CacheCleanerService.getLastSummary();
+        if (debug != null && !debug.isEmpty()) {
+            status += "\n\nDiagnostic: " + debug;
+        }
+        summaryText.setText(status);
     }
 
     private boolean isAccessibilityEnabled() {
@@ -188,16 +214,15 @@ public class MainActivity extends Activity {
         String myPkg = getPackageName();
 
         for (ApplicationInfo info : apps) {
-            if (info.packageName.equals(myPkg)) continue;
-            if (info.packageName.equals("com.android.settings")) continue;
+            String pkg = info.packageName;
+            if (pkg.equals(myPkg) || pkg.contains("settings")) continue;
 
-            boolean isSystem = (info.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
-            boolean isUpdatedSystem = (info.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0;
-
-            if (!includeSystem && isSystem && !isUpdatedSystem) {
-                continue;
+            if (!includeSystem) {
+                if (pm.getLaunchIntentForPackage(pkg) == null) {
+                    continue;
+                }
             }
-            packages.add(info.packageName);
+            packages.add(pkg);
         }
         Collections.sort(packages);
         return packages;
@@ -208,8 +233,8 @@ public class MainActivity extends Activity {
         btn.setText(label);
         btn.setAllCaps(false);
         btn.setTextColor(Color.WHITE);
-        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        btn.setPadding(dp(16), dp(14), dp(16), dp(14));
+        btn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        btn.setPadding(dp(16), dp(13), dp(16), dp(13));
         btn.setBackground(roundedBox(hexColor, dp(12)));
         return btn;
     }
