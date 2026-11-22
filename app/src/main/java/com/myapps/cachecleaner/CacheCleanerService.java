@@ -25,18 +25,21 @@ public class CacheCleanerService extends AccessibilityService {
 
     private static CacheCleanerService instance;
     private static volatile boolean running = false;
-    private static volatile String lastSummary = "Ready to clean.";
+    private static volatile boolean justFinished = false;
+    private static volatile String lastSummary = "Ready. Tap 'Scan Apps for Cache' to begin.";
     private static volatile String lastDebug = "";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<String> queue = new ArrayList<>();
 
+    private boolean turboMode = true;
     private int state = STATE_IDLE;
     private int currentIndex = -1;
     private int cleanedCount = 0;
     private int alreadyEmptyCount = 0;
     private int skippedCount = 0;
     private int totalCount = 0;
+    private long startTimeMs = 0L;
     private long ignoreUntil = 0L;
     private int scrollAttempts = 0;
     private boolean recheckScheduled = false;
@@ -65,7 +68,7 @@ public class CacheCleanerService extends AccessibilityService {
         if (root != null) {
             if (containsComputing(root)) {
                 recheckScheduled = false;
-                handler.postDelayed(pollRunnable, 400);
+                handler.postDelayed(pollRunnable, turboMode ? 220 : 400);
                 return;
             }
             AccessibilityNodeInfo clearNode = findClearCacheNode(root);
@@ -76,14 +79,14 @@ public class CacheCleanerService extends AccessibilityService {
                         state = STATE_MOVING_NEXT;
                         cleanedCount++;
                         handler.removeCallbacksAndMessages(null);
-                        handler.postDelayed(this::openNextApp, 320);
+                        handler.postDelayed(this::openNextApp, turboMode ? 130 : 300);
                         return;
                     }
                 } else {
                     state = STATE_MOVING_NEXT;
                     alreadyEmptyCount++;
                     handler.removeCallbacksAndMessages(null);
-                    handler.postDelayed(this::openNextApp, 150);
+                    handler.postDelayed(this::openNextApp, turboMode ? 60 : 150);
                     return;
                 }
             }
@@ -92,7 +95,7 @@ public class CacheCleanerService extends AccessibilityService {
         skippedCount++;
         state = STATE_MOVING_NEXT;
         handler.removeCallbacksAndMessages(null);
-        handler.postDelayed(this::openNextApp, 150);
+        handler.postDelayed(this::openNextApp, turboMode ? 60 : 150);
     };
 
     @Override
@@ -121,6 +124,14 @@ public class CacheCleanerService extends AccessibilityService {
         return running;
     }
 
+    public static boolean consumeJustFinished() {
+        if (justFinished) {
+            justFinished = false;
+            return true;
+        }
+        return false;
+    }
+
     public static String getLastSummary() {
         return lastSummary;
     }
@@ -129,11 +140,11 @@ public class CacheCleanerService extends AccessibilityService {
         return lastDebug;
     }
 
-    public static boolean startCleaning(List<String> packages) {
+    public static boolean startCleaning(List<String> packages, boolean turbo) {
         if (instance == null || packages == null || packages.isEmpty()) {
             return false;
         }
-        instance.beginQueue(packages);
+        instance.beginQueue(packages, turbo);
         return true;
     }
 
@@ -145,18 +156,21 @@ public class CacheCleanerService extends AccessibilityService {
         }
     }
 
-    private void beginQueue(List<String> packages) {
+    private void beginQueue(List<String> packages, boolean turbo) {
         handler.removeCallbacksAndMessages(null);
         queue.clear();
         queue.addAll(packages);
+        turboMode = turbo;
         currentIndex = -1;
         cleanedCount = 0;
         alreadyEmptyCount = 0;
         skippedCount = 0;
         totalCount = queue.size();
+        startTimeMs = SystemClock.uptimeMillis();
+        justFinished = false;
         lastDebug = "";
         running = true;
-        lastSummary = "Cleaning " + totalCount + " apps...";
+        lastSummary = (turboMode ? "Turbo cleaning " : "Cleaning ") + totalCount + " apps...";
         openNextApp();
     }
 
@@ -164,9 +178,11 @@ public class CacheCleanerService extends AccessibilityService {
         running = false;
         state = STATE_IDLE;
         handler.removeCallbacksAndMessages(null);
-        lastSummary = reason + " Cleared: " + cleanedCount
+        long secs = startTimeMs > 0 ? Math.max(1, (SystemClock.uptimeMillis() - startTimeMs) / 1000L) : 0;
+        lastSummary = reason + " (" + secs + "s) Cleared: " + cleanedCount
                 + " | Empty: " + alreadyEmptyCount
                 + " | Skipped: " + skippedCount + " (of " + totalCount + ")";
+        justFinished = true;
     }
 
     private void openNextApp() {
@@ -183,39 +199,44 @@ public class CacheCleanerService extends AccessibilityService {
         state = STATE_WAIT_STORAGE;
         scrollAttempts = 0;
         recheckScheduled = false;
-        ignoreUntil = SystemClock.uptimeMillis() + 350;
+        ignoreUntil = SystemClock.uptimeMillis() + (turboMode ? 140 : 320);
 
         Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
         intent.setData(Uri.parse("package:" + pkg));
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                 | Intent.FLAG_ACTIVITY_CLEAR_TASK
-                | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+                | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+                | Intent.FLAG_ACTIVITY_NO_ANIMATION);
 
         try {
             startActivity(intent);
         } catch (Exception e) {
             skippedCount++;
-            handler.postDelayed(this::openNextApp, 120);
+            handler.postDelayed(this::openNextApp, 80);
             return;
         }
 
-        handler.postDelayed(watchdogRunnable, 2600);
-        handler.postDelayed(pollRunnable, 450);
-        handler.postDelayed(pollRunnable, 950);
-        handler.postDelayed(pollRunnable, 1600);
+        handler.postDelayed(watchdogRunnable, turboMode ? 1800 : 3000);
+        handler.postDelayed(pollRunnable, turboMode ? 220 : 420);
+        handler.postDelayed(pollRunnable, turboMode ? 520 : 900);
+        handler.postDelayed(pollRunnable, turboMode ? 950 : 1500);
     }
 
     private void finishCleaning() {
         running = false;
         state = STATE_IDLE;
         handler.removeCallbacksAndMessages(null);
-        lastSummary = "Done! Cleared: " + cleanedCount
-                + " | Already empty: " + alreadyEmptyCount
+        long secs = Math.max(1, (SystemClock.uptimeMillis() - startTimeMs) / 1000L);
+        lastSummary = "Done in " + secs + "s! Cleared: " + cleanedCount
+                + " | Empty: " + alreadyEmptyCount
                 + " | Skipped: " + skippedCount + " (of " + totalCount + ")";
+        justFinished = true;
         Toast.makeText(this, lastSummary, Toast.LENGTH_LONG).show();
 
         Intent back = new Intent(this, MainActivity.class);
-        back.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        back.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                | Intent.FLAG_ACTIVITY_NO_ANIMATION);
         startActivity(back);
     }
 
@@ -266,10 +287,8 @@ public class CacheCleanerService extends AccessibilityService {
         if (!isSettingsRoot(root)) return;
 
         if (state == STATE_WAIT_STORAGE) {
-            AccessibilityNodeInfo existingClear = findClearCacheNode(root);
-            if (existingClear != null) {
-                state = STATE_WAIT_CLEAR;
-                handleClearScreen(root, existingClear);
+            // Ignore leftover Clear cache screen from the previous app while the new App Info page loads
+            if (findClearCacheNode(root) != null) {
                 return;
             }
 
@@ -279,17 +298,17 @@ public class CacheCleanerService extends AccessibilityService {
                 if (clickable != null && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
                     state = STATE_WAIT_CLEAR;
                     recheckScheduled = false;
-                    ignoreUntil = SystemClock.uptimeMillis() + 300;
+                    ignoreUntil = SystemClock.uptimeMillis() + (turboMode ? 120 : 280);
                     handler.removeCallbacks(pollRunnable);
-                    handler.postDelayed(pollRunnable, 400);
-                    handler.postDelayed(pollRunnable, 850);
-                    handler.postDelayed(pollRunnable, 1400);
+                    handler.postDelayed(pollRunnable, turboMode ? 200 : 380);
+                    handler.postDelayed(pollRunnable, turboMode ? 480 : 820);
+                    handler.postDelayed(pollRunnable, turboMode ? 880 : 1350);
                 }
             } else if (scrollAttempts < 2) {
                 scrollAttempts++;
-                ignoreUntil = SystemClock.uptimeMillis() + 300;
+                ignoreUntil = SystemClock.uptimeMillis() + (turboMode ? 150 : 280);
                 scrollListForward(root);
-                handler.postDelayed(pollRunnable, 380);
+                handler.postDelayed(pollRunnable, turboMode ? 210 : 360);
             }
         } else if (state == STATE_WAIT_CLEAR) {
             AccessibilityNodeInfo clearNode = findClearCacheNode(root);
@@ -311,11 +330,11 @@ public class CacheCleanerService extends AccessibilityService {
                 state = STATE_MOVING_NEXT;
                 cleanedCount++;
                 handler.removeCallbacksAndMessages(null);
-                handler.postDelayed(this::openNextApp, 320);
+                handler.postDelayed(this::openNextApp, turboMode ? 130 : 300);
             }
         } else if (!recheckScheduled) {
             recheckScheduled = true;
-            handler.postDelayed(recheckClearRunnable, 450);
+            handler.postDelayed(recheckClearRunnable, turboMode ? 260 : 500);
         }
     }
 
@@ -335,8 +354,7 @@ public class CacheCleanerService extends AccessibilityService {
     }
 
     private boolean isStorageLabel(String s) {
-        if (s.isEmpty()) return false;
-        if (s.contains("clear")) return false;
+        if (s.isEmpty() || s.contains("clear")) return false;
         return s.equals("storage & cache")
                 || s.equals("storage and cache")
                 || s.equals("storage usage")
