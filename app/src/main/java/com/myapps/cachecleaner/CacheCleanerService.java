@@ -42,6 +42,7 @@ public class CacheCleanerService extends AccessibilityService {
     private long startTimeMs = 0L;
     private long ignoreUntil = 0L;
     private int scrollAttempts = 0;
+    private int clearScrollAttempts = 0;
     private boolean recheckScheduled = false;
 
     private final Runnable watchdogRunnable = () -> {
@@ -68,7 +69,7 @@ public class CacheCleanerService extends AccessibilityService {
         if (root != null) {
             if (containsComputing(root)) {
                 recheckScheduled = false;
-                handler.postDelayed(pollRunnable, turboMode ? 220 : 400);
+                handler.postDelayed(pollRunnable, turboMode ? 240 : 400);
                 return;
             }
             AccessibilityNodeInfo clearNode = findClearCacheNode(root);
@@ -79,14 +80,14 @@ public class CacheCleanerService extends AccessibilityService {
                         state = STATE_MOVING_NEXT;
                         cleanedCount++;
                         handler.removeCallbacksAndMessages(null);
-                        handler.postDelayed(this::openNextApp, turboMode ? 130 : 300);
+                        handler.postDelayed(this::openNextApp, turboMode ? 150 : 320);
                         return;
                     }
                 } else {
                     state = STATE_MOVING_NEXT;
                     alreadyEmptyCount++;
                     handler.removeCallbacksAndMessages(null);
-                    handler.postDelayed(this::openNextApp, turboMode ? 60 : 150);
+                    handler.postDelayed(this::openNextApp, turboMode ? 70 : 150);
                     return;
                 }
             }
@@ -95,7 +96,7 @@ public class CacheCleanerService extends AccessibilityService {
         skippedCount++;
         state = STATE_MOVING_NEXT;
         handler.removeCallbacksAndMessages(null);
-        handler.postDelayed(this::openNextApp, turboMode ? 60 : 150);
+        handler.postDelayed(this::openNextApp, turboMode ? 70 : 150);
     };
 
     @Override
@@ -198,6 +199,7 @@ public class CacheCleanerService extends AccessibilityService {
         String pkg = queue.get(currentIndex);
         state = STATE_WAIT_STORAGE;
         scrollAttempts = 0;
+        clearScrollAttempts = 0;
         recheckScheduled = false;
         ignoreUntil = SystemClock.uptimeMillis() + (turboMode ? 140 : 320);
 
@@ -216,10 +218,10 @@ public class CacheCleanerService extends AccessibilityService {
             return;
         }
 
-        handler.postDelayed(watchdogRunnable, turboMode ? 1800 : 3000);
+        handler.postDelayed(watchdogRunnable, turboMode ? 2200 : 3400);
         handler.postDelayed(pollRunnable, turboMode ? 220 : 420);
         handler.postDelayed(pollRunnable, turboMode ? 520 : 900);
-        handler.postDelayed(pollRunnable, turboMode ? 950 : 1500);
+        handler.postDelayed(pollRunnable, turboMode ? 1050 : 1600);
     }
 
     private void finishCleaning() {
@@ -287,7 +289,6 @@ public class CacheCleanerService extends AccessibilityService {
         if (!isSettingsRoot(root)) return;
 
         if (state == STATE_WAIT_STORAGE) {
-            // Ignore leftover Clear cache screen from the previous app while the new App Info page loads
             if (findClearCacheNode(root) != null) {
                 return;
             }
@@ -297,23 +298,29 @@ public class CacheCleanerService extends AccessibilityService {
                 AccessibilityNodeInfo clickable = findClickableTarget(storageNode);
                 if (clickable != null && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
                     state = STATE_WAIT_CLEAR;
+                    clearScrollAttempts = 0;
                     recheckScheduled = false;
                     ignoreUntil = SystemClock.uptimeMillis() + (turboMode ? 120 : 280);
                     handler.removeCallbacks(pollRunnable);
-                    handler.postDelayed(pollRunnable, turboMode ? 200 : 380);
-                    handler.postDelayed(pollRunnable, turboMode ? 480 : 820);
-                    handler.postDelayed(pollRunnable, turboMode ? 880 : 1350);
+                    handler.postDelayed(pollRunnable, turboMode ? 220 : 400);
+                    handler.postDelayed(pollRunnable, turboMode ? 550 : 900);
+                    handler.postDelayed(pollRunnable, turboMode ? 1050 : 1500);
                 }
             } else if (scrollAttempts < 2) {
                 scrollAttempts++;
                 ignoreUntil = SystemClock.uptimeMillis() + (turboMode ? 150 : 280);
                 scrollListForward(root);
-                handler.postDelayed(pollRunnable, turboMode ? 210 : 360);
+                handler.postDelayed(pollRunnable, turboMode ? 220 : 360);
             }
         } else if (state == STATE_WAIT_CLEAR) {
             AccessibilityNodeInfo clearNode = findClearCacheNode(root);
             if (clearNode != null) {
                 handleClearScreen(root, clearNode);
+            } else if (clearScrollAttempts < 1 && containsText(root, "space used")) {
+                clearScrollAttempts++;
+                ignoreUntil = SystemClock.uptimeMillis() + (turboMode ? 160 : 280);
+                scrollListForward(root);
+                handler.postDelayed(pollRunnable, turboMode ? 220 : 360);
             }
         }
     }
@@ -330,11 +337,11 @@ public class CacheCleanerService extends AccessibilityService {
                 state = STATE_MOVING_NEXT;
                 cleanedCount++;
                 handler.removeCallbacksAndMessages(null);
-                handler.postDelayed(this::openNextApp, turboMode ? 130 : 300);
+                handler.postDelayed(this::openNextApp, turboMode ? 150 : 320);
             }
         } else if (!recheckScheduled) {
             recheckScheduled = true;
-            handler.postDelayed(recheckClearRunnable, turboMode ? 260 : 500);
+            handler.postDelayed(recheckClearRunnable, turboMode ? 350 : 550);
         }
     }
 
@@ -368,7 +375,7 @@ public class CacheCleanerService extends AccessibilityService {
         if (node == null) return null;
         String text = normalize(node.getText());
         String desc = normalize(node.getContentDescription());
-        if (text.equals("clear cache") || desc.equals("clear cache")) {
+        if (isClearCacheLabel(text) || isClearCacheLabel(desc)) {
             return node;
         }
         int count = node.getChildCount();
@@ -377,6 +384,12 @@ public class CacheCleanerService extends AccessibilityService {
             if (found != null) return found;
         }
         return null;
+    }
+
+    private boolean isClearCacheLabel(String s) {
+        if (s.isEmpty()) return false;
+        if (s.contains("storage") || s.contains("data")) return false;
+        return s.equals("clear cache");
     }
 
     private boolean containsComputing(AccessibilityNodeInfo node) {
@@ -388,6 +401,18 @@ public class CacheCleanerService extends AccessibilityService {
         int count = node.getChildCount();
         for (int i = 0; i < count; i++) {
             if (containsComputing(node.getChild(i))) return true;
+        }
+        return false;
+    }
+
+    private boolean containsText(AccessibilityNodeInfo node, String needleLower) {
+        if (node == null) return false;
+        if (normalize(node.getText()).contains(needleLower)) {
+            return true;
+        }
+        int count = node.getChildCount();
+        for (int i = 0; i < count; i++) {
+            if (containsText(node.getChild(i), needleLower)) return true;
         }
         return false;
     }
@@ -434,7 +459,7 @@ public class CacheCleanerService extends AccessibilityService {
         CharSequence pkgCs = root.getPackageName();
         String pkg = pkgCs == null ? "unknown" : pkgCs.toString();
         List<String> samples = new ArrayList<>();
-        collectSampleTexts(root, samples, 8);
+        collectSampleTexts(root, samples, 25);
         lastDebug = tag + " | pkg=" + pkg + " | texts=" + samples;
     }
 
